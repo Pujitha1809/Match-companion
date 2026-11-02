@@ -14,8 +14,10 @@ from typing import Any, Dict, List, Optional
 from ai.prompts import (
     POINT_EXPLAINER_SYSTEM_PROMPT,
     CATCH_UP_SYSTEM_PROMPT,
+    DUGOUT_AI_SYSTEM_PROMPT,
     build_point_event_prompt,
     build_catch_up_prompt,
+    build_dugout_query_prompt,
 )
 
 # Optional Gemini client initialization
@@ -185,14 +187,45 @@ def build_deterministic_catchup_template(
     return "\n\n".join([f"• {b}" for b in bullets])
 
 
-def narrate_point_event(fact: Dict[str, Any], language: str = "English") -> str:
-    """Narrates a single point event with pre-generated cache, Gemini API, or fallback.
+def build_deterministic_dugout_fallback(query: str, current_state: Dict[str, Any], language: str = "English") -> str:
+    """Generates context-aware deterministic answers for fan queries."""
+    q_lower = query.lower().strip()
+    is_hinglish = language.lower() == "hinglish"
 
-    Order of priority:
-    1. Pre-generated Cache (0ms latency, works offline)
-    2. Live Gemini API (if API key present)
-    3. Deterministic template fallback (guarantees 100% uptime)
-    """
+    batter = current_state.get("batter", "The batter")
+    bowler = current_state.get("bowler", "The bowler")
+    cap = current_state.get("captain_name", "Captain")
+    vc = current_state.get("vc_name", "Vice-Captain")
+    d_disp = current_state.get("delivery_display", "this over")
+
+    if any(k in q_lower for k in ["bowler", "bowling", "why"]):
+        if is_hinglish:
+            return f"{bowler} ko is critical phase mein wickets aur dot ball pressure banane ke liye deploy kiya gaya hai, jo direct fantasy points fetch karega."
+        return f"{bowler} is bowling to create dot-ball pressure and harvest wicket bonuses (+33 pts for bowled/lbw), offering high fantasy upside."
+
+    elif any(k in q_lower for k in ["upside", "lineup", "highest", "top", "rank", "points"]):
+        if is_hinglish:
+            return f"Aapke active Captain {cap} (2.0x) aur VC {vc} (1.5x) ke paas immediate multiplier boost ke chalte sabse highest upside hai."
+        return f"Your active Captain {cap} (2.0x) and Vice-Captain {vc} (1.5x) carry the highest scoring ceiling during this match phase."
+
+    elif any(k in q_lower for k in ["field", "setup", "catch"]):
+        if is_hinglish:
+            return f"{batter} ke boundary shots rokne ke liye fielders deep lagaye gaye hain, jisse aerial mistimed shots par catch dismissals (+8 pts) ka strong chance hai."
+        return f"The field features boundary riders to counter {batter}'s aggression, creating prime catch opportunities (+8 fielding pts) on mistimed hits."
+
+    elif any(k in q_lower for k in ["six", "boundary", "four"]):
+        if is_hinglish:
+            return f"Agar {batter} six lagata hai toh +8 pts (+2 bonus) milenge, aur 2.0x captain armband ke sath seedha +16 pts ho jayenge!"
+        return f"A six awards 6 runs plus a +2 bonus (+8 pts total), which doubles to +16 pts under your 2.0x Captain armband."
+
+    # General contextual response
+    if is_hinglish:
+        return f"{d_disp} par {batter} aur {bowler} ka contest live chal raha hai — har legal delivery aapki team points aur rank ko instantly swing kar sakti hai."
+    return f"At {d_disp}, {batter} and {bowler} are in direct battle; every dot ball (+1 pt) or boundary (+5 to +8 pts) immediately impacts your fantasy tally."
+
+
+def narrate_point_event(fact: Dict[str, Any], language: str = "English") -> str:
+    """Narrates a single point event with pre-generated cache, Gemini API, or fallback."""
     lang_lower = language.strip().lower()
 
     # 1. Check offline cache
@@ -237,10 +270,7 @@ def narrate_catch_up(
     match_status: str,
     language: str = "English"
 ) -> str:
-    """Narrates match recap using Cache, Gemini, or deterministic fallback.
-
-    Never recalculates numbers. Never crashes.
-    """
+    """Narrates match recap using Cache, Gemini, or deterministic fallback."""
     lang_lower = language.strip().lower()
 
     # 1. Check offline cache for matching delivery milestone
@@ -288,3 +318,43 @@ def narrate_catch_up(
 
     # 3. Deterministic template fallback
     return build_deterministic_catchup_template(recent_facts, match_status, language)
+
+
+def answer_fan_query(
+    query: str,
+    current_state: Dict[str, Any],
+    language: str = "English"
+) -> str:
+    """Answers live fan queries using Gemini API or smart deterministic fallback.
+
+    Invariants:
+    - Grounded strictly in current_state.
+    - Max 2 concise sentences (under 40 words).
+    - Supports English and Hinglish.
+    - Never raises uncaught exceptions.
+    """
+    fallback_text = build_deterministic_dugout_fallback(query, current_state, language)
+
+    api_key = _get_api_key()
+    if not _genai_available or not api_key:
+        return fallback_text
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction=DUGOUT_AI_SYSTEM_PROMPT
+        )
+        prompt = build_dugout_query_prompt(query, current_state, language)
+        response = model.generate_content(
+            prompt,
+            generation_config={"max_output_tokens": 70, "temperature": 0.25}
+        )
+        if response and response.text:
+            text = response.text.strip().replace("\n", " ")
+            if len(text) > 8:
+                return text
+    except Exception:
+        pass
+
+    return fallback_text

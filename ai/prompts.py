@@ -1,4 +1,4 @@
-"""System instructions and prompt templates for LLM narration."""
+"""System instructions and prompt templates for LLM narration and Dugout AI."""
 
 POINT_EXPLAINER_SYSTEM_PROMPT = """You are an enthusiastic cricket analyst and fantasy expert for Dream11.
 Your task is to explain a fantasy point change concisely based ONLY on the provided structured fact.
@@ -20,6 +20,17 @@ STRICT RULES:
 4. If language is 'English', keep it punchy, informative, and professional.
 5. If language is 'Hinglish', use natural Indian Romanized Hinglish (mix of Hindi & English as used by cricket fans in India).
 6. Under 80 words total.
+"""
+
+DUGOUT_AI_SYSTEM_PROMPT = """You are 'Dugout AI', an elite cricket coach and Dream11 fantasy strategist answering live fan queries.
+Your answers must be grounded strictly in the current match state, active players, and fantasy scoring rules.
+
+STRICT RULES:
+1. Exactly 1 or 2 concise sentences (under 35 words total).
+2. Never invent match scores, past historical stats, or give gambling/betting advice.
+3. If language is 'English', speak like an insightful dugout tactical analyst.
+4. If language is 'Hinglish', use authentic, casual Indian Romanized Hinglish (e.g. "Bumrah death overs mein yorkers daal kar wickets nikalne aaya hai, Captain multiplier se tagda fayda hoga!").
+5. Highlight fantasy point implications where relevant.
 """
 
 
@@ -50,3 +61,21 @@ Recent Key Events:
 {facts_summary}
 
 Provide a 3-4 bullet recap highlighting user's fantasy players:"""
+
+
+def build_dugout_query_prompt(query: str, current_state: dict, language: str) -> str:
+    """Formats prompt payload for Dugout AI interactive fan Q&A."""
+    return f"""Language: {language}
+Fan Question: "{query}"
+
+Live Match Snapshot:
+- Phase/Over: {current_state.get('delivery_display')} (Innings {current_state.get('innings')})
+- Batting Team: {current_state.get('team_batting')} ({current_state.get('runs_total_innings')}/{current_state.get('wickets_total_innings')})
+- Striker: {current_state.get('batter')}
+- Bowler: {current_state.get('bowler')}
+- User Fantasy Total: {current_state.get('team_points')} pts
+- Active Captain: {current_state.get('captain_name')}
+- Active Vice-Captain: {current_state.get('vc_name')}
+- Last Ball Event: {current_state.get('last_event', 'Standard delivery')}
+
+Answer in 1-2 sentences (max 35 words):"""

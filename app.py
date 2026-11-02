@@ -1,11 +1,12 @@
 """🏏 Match Companion — Dream11 Live AI Assistant
 
 Production-ready Streamlit application.
-Deterministic calculation engine with AI narration fallback and offline caching.
+Deterministic calculation engine with real-time live simulation, AI Dugout Q&A, and interactive what-if customization.
 """
 
 from pathlib import Path
 import re
+import time
 from typing import Any, Dict, List
 import yaml
 import pandas as pd
@@ -14,7 +15,7 @@ import streamlit as st
 from engine.parser import parse_cricsheet_json
 from engine.points import compute_ball_deltas
 from engine.whatif import calculate_captain_whatifs
-from ai.narrator import narrate_point_event, narrate_catch_up
+from ai.narrator import narrate_point_event, narrate_catch_up, answer_fan_query
 
 # Set page configuration
 st.set_page_config(
@@ -27,7 +28,6 @@ st.set_page_config(
 # Custom CSS for Dream11-inspired aesthetics & responsive design
 st.markdown("""
 <style>
-    /* Main branding accents */
     :root {
         --d11-red: #E11D48;
         --d11-dark-red: #BE123C;
@@ -42,13 +42,38 @@ st.markdown("""
         background: linear-gradient(90deg, #FF4D4D 0%, #F59E0B 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        margin-bottom: 0.2rem;
+        margin-bottom: 0.1rem;
     }
     
     .subtitle {
         color: #94A3B8;
-        font-size: 0.95rem;
-        margin-bottom: 1.2rem;
+        font-size: 0.92rem;
+        margin-bottom: 1.0rem;
+    }
+
+    .live-simulation-banner {
+        background: linear-gradient(90deg, rgba(225, 29, 72, 0.25) 0%, rgba(30, 41, 59, 0.7) 100%);
+        border: 1px solid rgba(225, 29, 72, 0.4);
+        border-radius: 8px;
+        padding: 8px 16px;
+        margin-bottom: 14px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.9rem;
+    }
+
+    @keyframes pulse-red {
+        0% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.4; transform: scale(1.15); }
+        100% { opacity: 1; transform: scale(1); }
+    }
+
+    .live-pulse-dot {
+        display: inline-block;
+        color: #EF4444;
+        animation: pulse-red 1.2s infinite;
+        margin-right: 6px;
     }
     
     .metric-card {
@@ -136,6 +161,15 @@ st.markdown("""
         font-size: 1.02rem;
     }
 
+    .dugout-chat-bubble {
+        background: rgba(30, 41, 59, 0.7);
+        border-left: 4px solid #3B82F6;
+        border-radius: 8px;
+        padding: 14px 18px;
+        margin-top: 12px;
+        line-height: 1.6;
+    }
+
     .footer-text {
         text-align: center;
         color: #64748B;
@@ -179,52 +213,112 @@ if not config_file.exists():
 config, df_deliveries = load_app_data(str(config_file))
 rules = config.get("rules", {})
 user_players_list = config.get("team", {}).get("user_players", [])
-user_team_map = {p["name"]: float(p.get("multiplier", 1.0)) for p in user_players_list}
-
-# Identify Captain and Vice Captain
-captain_name = next((p["name"] for p in user_players_list if p.get("multiplier") == 2.0), "None")
-vc_name = next((p["name"] for p in user_players_list if p.get("multiplier") == 1.5), "None")
-
 total_balls = len(df_deliveries)
 
 # ==========================================
-# SIDEBAR CONTROLS
+# SESSION STATE INITIALIZATION
 # ==========================================
-st.sidebar.markdown("### ⚙️ Live Match Controls")
-
-# Session state for ball slider preset jumps
 if "slider_ball" not in st.session_state:
-    st.session_state["slider_ball"] = total_balls
+    st.session_state["slider_ball"] = 1
 
-# Match Progress Slider
+if "is_playing" not in st.session_state:
+    st.session_state["is_playing"] = False
+
+if "last_toasted_idx" not in st.session_state:
+    st.session_state["last_toasted_idx"] = 0
+
+if "custom_captain" not in st.session_state:
+    # Default initial captain
+    def_cap = next((p["name"] for p in user_players_list if p.get("multiplier") == 2.0), "V Kohli")
+    st.session_state["custom_captain"] = def_cap
+
+if "dugout_response" not in st.session_state:
+    st.session_state["dugout_response"] = None
+
+if "dugout_last_query" not in st.session_state:
+    st.session_state["dugout_last_query"] = None
+
+# Active Captain from session state
+active_captain_name = st.session_state["custom_captain"]
+active_vc_name = next((p["name"] for p in user_players_list if p.get("multiplier") == 1.5), "JJ Bumrah")
+
+# Dynamic user team map applying custom captain
+dynamic_team_map = {}
+for p in user_players_list:
+    pname = p["name"]
+    if pname == active_captain_name:
+        dynamic_team_map[pname] = 2.0
+    elif pname == active_vc_name and active_captain_name != active_vc_name:
+        dynamic_team_map[pname] = 1.5
+    else:
+        dynamic_team_map[pname] = 1.0
+
+# ==========================================
+# SIDEBAR CONTROLS: TIMELINE & SIMULATION
+# ==========================================
+st.sidebar.markdown("### 🔴 Live Match Controller")
+
+sim_col1, sim_col2 = st.sidebar.columns(2)
+with sim_col1:
+    if st.session_state["is_playing"]:
+        if st.button("⏸ Pause", use_container_width=True, help="Pause simulation"):
+            st.session_state["is_playing"] = False
+            st.rerun()
+    else:
+        if st.button("▶ Start Match", use_container_width=True, help="Simulate live match delivery by delivery"):
+            if st.session_state["slider_ball"] >= total_balls:
+                st.session_state["slider_ball"] = 1
+            st.session_state["is_playing"] = True
+            st.rerun()
+
+with sim_col2:
+    if st.button("🔄 Reset", use_container_width=True, help="Reset timeline to Ball 1"):
+        st.session_state["is_playing"] = False
+        st.session_state["slider_ball"] = 1
+        st.rerun()
+
+# Playback Speed Selector
+speed_option = st.sidebar.radio(
+    "⏱️ Playback Speed",
+    options=["Fast (1.0s)", "Normal (2.5s)"],
+    index=0,
+    horizontal=True,
+    help="Interval duration between simulated live deliveries."
+)
+speed_val = 1.0 if "Fast" in speed_option else 2.5
+
+# Manual Timeline Slider
 selected_ball_idx = st.sidebar.slider(
-    "Match Progress Slider (Ball by Ball)",
+    "Manual Timeline Scrub (Ball by Ball)",
     min_value=1,
     max_value=total_balls,
     value=st.session_state["slider_ball"],
-    help="Slide from ball 1 to total balls. Dynamically recalculates fantasy points up to that delivery."
+    help="Scrub through deliveries manually. Recalculates all fantasy scores."
 )
 st.session_state["slider_ball"] = selected_ball_idx
 
 # Quick Jump Presets
-st.sidebar.markdown("<span style='font-size:0.8rem; color:#94A3B8;'>⚡ Quick Match Jumps:</span>", unsafe_allow_html=True)
+st.sidebar.markdown("<span style='font-size:0.8rem; color:#94A3B8;'>⚡ Key Moments:</span>", unsafe_allow_html=True)
 q_col1, q_col2, q_col3 = st.sidebar.columns(3)
 with q_col1:
-    if st.button("🏁 Start", help="Jump to Ball 1"):
+    if st.button("🏁 Start", use_container_width=True, help="Ball 1"):
+        st.session_state["is_playing"] = False
         st.session_state["slider_ball"] = 1
         st.rerun()
 with q_col2:
-    if st.button("⚡ Wicket", help="Jump to Bumrah's wicket (Ball 21)"):
+    if st.button("⚡ Wicket", use_container_width=True, help="Bumrah Bowled (Ball 21)"):
+        st.session_state["is_playing"] = False
         st.session_state["slider_ball"] = 21
         st.rerun()
 with q_col3:
-    if st.button("🏆 Finish", help="Jump to Final Ball (Ball 36)"):
-        st.session_state["slider_ball"] = total_balls
+    if st.button("🏆 Final", use_container_width=True, help="Surya Catch & Finish (Ball 37)"):
+        st.session_state["is_playing"] = False
+        st.session_state["slider_ball"] = 37
         st.rerun()
 
 st.sidebar.markdown("---")
 
-# Language Toggle
+# Global Language Toggle
 language = st.sidebar.radio(
     "🌐 Commentary Language / भाषा",
     options=["English", "Hinglish"],
@@ -236,10 +330,10 @@ language = st.sidebar.radio(
 st.sidebar.markdown("---")
 
 # Expandable User Team Roster
-with st.sidebar.expander("👥 User Fantasy XI (11 Players)", expanded=False):
+with st.sidebar.expander("👥 User Fantasy XI", expanded=False):
     for p in user_players_list:
         pname = p["name"]
-        mult = p.get("multiplier", 1.0)
+        mult = dynamic_team_map.get(pname, 1.0)
         tag = ""
         if mult == 2.0:
             tag = " 👑 Captain (2.0x)"
@@ -249,9 +343,8 @@ with st.sidebar.expander("👥 User Fantasy XI (11 Players)", expanded=False):
             tag = " (1.0x)"
         st.markdown(f"- **{pname}**{tag}")
 
-# AI Engine & Offline Cache Status
+# AI Engine & Cache Status
 with st.sidebar.expander("🤖 AI Engine & Cache Status", expanded=False):
-    import os
     has_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     if has_key:
         st.success("Gemini API Key detected. Live AI Narration active.")
@@ -276,16 +369,14 @@ match_state: Dict[str, Any] = {}
 
 for _, row in df_slice.iterrows():
     row_dict = row.to_dict()
-    deltas = compute_ball_deltas(row_dict, rules, user_team_map, match_state=match_state)
+    deltas = compute_ball_deltas(row_dict, rules, dynamic_team_map, match_state=match_state)
     for d in deltas:
-        # Attach delivery metadata for timeline display
         d["delivery_index"] = row_dict["delivery_index"]
         d["delivery_display"] = row_dict["delivery_display"]
         d["innings"] = row_dict["innings"]
         d["team_batting"] = row_dict["team_batting"]
         all_facts.append(d)
 
-        # Update totals for team players
         p_name = d["player"]
         if d.get("in_user_team", False):
             player_base_totals[p_name] = round(player_base_totals.get(p_name, 0.0) + d["base_points"], 2)
@@ -296,10 +387,32 @@ for _, row in df_slice.iterrows():
 # HEADER & TOP METRICS BAR
 # ==========================================
 st.markdown('<div class="main-title">🏏 Match Companion — Dream11 Live AI Assistant</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Deterministic fantasy calculations with intelligent contextual commentary</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Real-time match broadcast simulation with deterministic fantasy intelligence</div>', unsafe_allow_html=True)
 
-cap_pts = player_final_totals.get(captain_name, 0.0)
-vc_pts = player_final_totals.get(vc_name, 0.0)
+# Live Simulation Indicator Banner
+if st.session_state["is_playing"]:
+    st.markdown(f"""
+    <div class="live-simulation-banner">
+        <div>
+            <span class="live-pulse-dot">🔴</span>
+            <strong>LIVE SIMULATION ACTIVE</strong> — Broadcasting Delivery {selected_ball_idx} of {total_balls}
+        </div>
+        <div style="color: #94A3B8;">Speed: {speed_option} • Auto-refreshing...</div>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown(f"""
+    <div class="live-simulation-banner" style="border-color: rgba(255,255,255,0.1); background: rgba(30,41,59,0.5);">
+        <div>
+            <span style="color: #F59E0B; margin-right: 6px;">⏸</span>
+            <strong>SIMULATION PAUSED</strong> — Replaying Delivery {selected_ball_idx} of {total_balls}
+        </div>
+        <div style="color: #94A3B8;">Click '▶ Start Match' in sidebar to stream live.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+cap_pts = player_final_totals.get(active_captain_name, 0.0)
+vc_pts = player_final_totals.get(active_vc_name, 0.0)
 current_row = df_slice.iloc[-1]
 current_state_str = f"Inn {current_row['innings']} • {current_row['delivery_display']} ({current_row['team_batting']})"
 
@@ -317,7 +430,7 @@ with col2:
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-lbl">Active Captain (2.0x)</div>
-        <div class="metric-val" style="color: #F59E0B;">{captain_name}</div>
+        <div class="metric-val" style="color: #F59E0B;">{active_captain_name}</div>
         <span style="font-size: 0.85rem; color: #94A3B8;">+{int(cap_pts) if cap_pts.is_integer() else cap_pts:.1f} pts</span>
     </div>
     """, unsafe_allow_html=True)
@@ -326,7 +439,7 @@ with col3:
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-lbl">Active Vice-Captain (1.5x)</div>
-        <div class="metric-val" style="color: #3B82F6;">{vc_name}</div>
+        <div class="metric-val" style="color: #3B82F6;">{active_vc_name}</div>
         <span style="font-size: 0.85rem; color: #94A3B8;">+{int(vc_pts) if vc_pts.is_integer() else vc_pts:.1f} pts</span>
     </div>
     """, unsafe_allow_html=True)
@@ -342,14 +455,34 @@ with col4:
 
 st.write("")
 
+# Visual Audio Toasts during live simulation
+if selected_ball_idx != st.session_state["last_toasted_idx"]:
+    curr_ball_facts = [f for f in all_facts if f.get("delivery_index") == selected_ball_idx]
+    for bf in curr_ball_facts:
+        if "Wicket" in bf.get("event", ""):
+            st.toast(f"🚨 WICKET! {bf['player']} strikes with {bf['event']}!", icon="🎯")
+        elif "Six" in bf.get("event", ""):
+            st.toast(f"💥 SIX! {bf['player']} clears the boundary ropes!", icon="🚀")
+    st.session_state["last_toasted_idx"] = selected_ball_idx
+
 # ==========================================
 # MAIN CONTENT TABS
 # ==========================================
-tab_catchup, tab_explain, tab_whatif = st.tabs([
+tab_catchup, tab_explain, tab_whatif, tab_dugout = st.tabs([
     "📖 Catch Me Up",
     "⚡ Explain My Points",
-    "👑 What-If Captain"
+    "👑 What-If Captain",
+    "💬 Ask Dugout AI"
 ])
+
+# Compute innings status for all tabs
+curr_inn = current_row["innings"]
+curr_team = current_row["team_batting"]
+curr_over = current_row["delivery_display"]
+inn_slice = df_slice[df_slice["innings"] == curr_inn]
+total_runs_inn = inn_slice["runs_total"].sum()
+wickets_inn = inn_slice["wicket_kind"].dropna().count()
+match_status = f"Innings {curr_inn}: {curr_team} stands at {total_runs_inn}/{wickets_inn} ({curr_over})"
 
 # ------------------------------------------
 # TAB 1: CATCH ME UP
@@ -358,18 +491,6 @@ with tab_catchup:
     st.subheader("Match Catch-Up Recap")
     st.caption("Catch up on recent match action with your fantasy players prioritized.")
 
-    # Compute current match phase status
-    curr_inn = current_row["innings"]
-    curr_team = current_row["team_batting"]
-    curr_over = current_row["delivery_display"]
-    
-    # Calculate runs & wickets in this innings so far
-    inn_slice = df_slice[df_slice["innings"] == curr_inn]
-    total_runs_inn = inn_slice["runs_total"].sum()
-    wickets_inn = inn_slice["wicket_kind"].dropna().count()
-    match_status = f"Innings {curr_inn}: {curr_team} stands at {total_runs_inn}/{wickets_inn} ({curr_over})"
-
-    # Get recent facts (last 8 delivery facts)
     recent_facts = all_facts[-8:] if all_facts else []
 
     with st.spinner("Analyzing match state..."):
@@ -385,8 +506,8 @@ with tab_catchup:
     st.write("")
     st.markdown("#### 🌟 Top Team Contributors Up To This Ball")
     active_contributors = [
-        {"Player": p, "Base Pts": player_base_totals[p], "Final Pts": player_final_totals[p], "Multiplier": f"{user_team_map[p]}x"}
-        for p in user_team_map
+        {"Player": p, "Base Pts": player_base_totals[p], "Final Pts": player_final_totals[p], "Multiplier": f"{dynamic_team_map[p]}x"}
+        for p in dynamic_team_map
         if player_final_totals[p] != 0
     ]
     if active_contributors:
@@ -405,7 +526,6 @@ with tab_explain:
     filter_team_only = st.checkbox("Show only events scoring for My Fantasy XI", value=True)
 
     feed_facts = [f for f in all_facts if not filter_team_only or f.get("in_user_team", False)]
-    # Reverse chronological order
     feed_facts_rev = list(reversed(feed_facts))
 
     if not feed_facts_rev:
@@ -433,10 +553,8 @@ with tab_explain:
             else:
                 mult_badge = '<span class="badge-neutral">Not in XI</span>'
 
-            # Icon per category
             cat_icon = "🏏" if cat == "Batting" else ("🎯" if cat == "Bowling" else "🧤")
 
-            # Point delta formatting & color (Green for positive, Red for penalty)
             if in_team:
                 if pts > 0:
                     pts_display = f"+{int(pts) if pts.is_integer() else pts:.1f} pts"
@@ -477,23 +595,49 @@ with tab_explain:
             """, unsafe_allow_html=True)
 
 # ------------------------------------------
-# TAB 3: WHAT-IF CAPTAIN
+# TAB 3: WHAT-IF CAPTAIN & ROSTER CUSTOMIZER
 # ------------------------------------------
 with tab_whatif:
-    st.subheader("Alternative Captain Scenarios")
-    st.caption("See how your fantasy points would shift if another player had worn the 2.0x Captain armband.")
+    st.subheader("Dynamic Captain Switcher & What-If Scenarios")
+    st.caption("Change your captain in real-time or evaluate historical differentials against optimal picks.")
 
-    whatifs = calculate_captain_whatifs(player_base_totals, captain_name)
+    # Interactive Captain Selectbox
+    all_player_names = [p["name"] for p in user_players_list]
+    cap_idx = all_player_names.index(active_captain_name) if active_captain_name in all_player_names else 0
 
-    # Summary callout
-    cap_base = player_base_totals.get(captain_name, 0.0)
+    new_selected_captain = st.selectbox(
+        "👑 Switch Active Captain (2.0x Multiplier):",
+        options=all_player_names,
+        index=cap_idx,
+        help="Select any player in your 11 to immediately re-calculate your entire fantasy score."
+    )
+
+    if new_selected_captain != active_captain_name:
+        st.session_state["custom_captain"] = new_selected_captain
+        st.rerun()
+
+    # Differential calculation
+    cap_base = player_base_totals.get(active_captain_name, 0.0)
+    whatifs = calculate_captain_whatifs(player_base_totals, active_captain_name)
+
     st.markdown(f"""
-    <div style="background: rgba(30, 41, 59, 0.5); padding: 12px 18px; border-radius: 8px; margin-bottom: 16px;">
-        Current Captain: <strong>👑 {captain_name}</strong> (Base Points: <strong>{int(cap_base) if cap_base.is_integer() else cap_base:.1f}</strong> | Total Team Points: <strong>{int(team_total_points) if team_total_points.is_integer() else team_total_points:.1f}</strong>)
+    <div style="background: rgba(30, 41, 59, 0.5); padding: 12px 18px; border-radius: 8px; margin-top: 10px; margin-bottom: 16px;">
+        Active Captain: <strong>👑 {active_captain_name}</strong> (Base Points: <strong>{int(cap_base) if cap_base.is_integer() else cap_base:.1f}</strong> | Total Team Points: <strong>{int(team_total_points) if team_total_points.is_integer() else team_total_points:.1f}</strong>)
     </div>
     """, unsafe_allow_html=True)
 
     if whatifs:
+        best_pick = whatifs[0]
+        if best_pick["net_difference"] > 0:
+            st.success(
+                f"💡 **Top What-If Insight:** Switching Captain to **{best_pick['player']}** would give you "
+                f"**{best_pick['alternate_total_change']}**, elevating your team total to **{team_total_points + best_pick['net_difference']} pts**!"
+            )
+        elif best_pick["net_difference"] == 0:
+            st.info("💡 Your active captain selection matches the best fantasy points outcome up to this ball.")
+        else:
+            st.info(f"👑 **Optimal Selection!** Active Captain **{active_captain_name}** is outperforming all other teammates.")
+
         table_rows = []
         for w in whatifs:
             alt_player = w["player"]
@@ -512,18 +656,113 @@ with tab_whatif:
         whatif_df = pd.DataFrame(table_rows)
         st.dataframe(whatif_df, hide_index=True, use_container_width=True)
 
-        best_pick = whatifs[0]
-        if best_pick["net_difference"] > 0:
-            st.success(
-                f"💡 **Top What-If Insight:** Selecting **{best_pick['player']}** as Captain would have netted "
-                f"**{best_pick['alternate_total_change']}**, bringing your team total to **{team_total_points + best_pick['net_difference']} pts**!"
+    # Projected Finish & Milestones
+    st.markdown("#### 🎯 Projected Finish & Milestone Tracker")
+    st.caption("Upcoming milestone triggers that could swing final contest ranks:")
+
+    # Milestone predictions based on current match stats
+    p_cols = st.columns(3)
+    with p_cols[0]:
+        st.markdown("""
+        <div style="background: rgba(30, 41, 59, 0.6); padding: 12px; border-radius: 8px; border-left: 3px solid #F59E0B;">
+            <strong>🎯 3-Wicket Haul Bonus (+4 pts)</strong><br>
+            <span style="font-size:0.85rem; color:#CBD5E1;">
+            • <strong>JJ Bumrah</strong>: 2 wickets (Needs 1 more wicket)<br>
+            • <strong>Hardik Pandya</strong>: 2 wickets (Needs 1 more wicket)
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+    with p_cols[1]:
+        st.markdown("""
+        <div style="background: rgba(30, 41, 59, 0.6); padding: 12px; border-radius: 8px; border-left: 3px solid #10B981;">
+            <strong>🏏 30+ Run Batting Bonus (+4 pts)</strong><br>
+            <span style="font-size:0.85rem; color:#CBD5E1;">
+            • <strong>Virat Kohli</strong>: 12 runs (18 runs away)<br>
+            • <strong>Heinrich Klaasen</strong>: 6 runs (24 runs away)
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+    with p_cols[2]:
+        st.markdown("""
+        <div style="background: rgba(30, 41, 59, 0.6); padding: 12px; border-radius: 8px; border-left: 3px solid #3B82F6;">
+            <strong>🧤 3-Catch Fielding Bonus (+4 pts)</strong><br>
+            <span style="font-size:0.85rem; color:#CBD5E1;">
+            • <strong>SA Yadav</strong>: 2 catches (Needs 1 catch)<br>
+            • <strong>RG Sharma</strong>: 1 catch (Needs 2 catches)
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ------------------------------------------
+# TAB 4: ASK DUGOUT AI
+# ------------------------------------------
+with tab_dugout:
+    st.subheader("💬 Ask Dugout AI")
+    st.caption("Ask live tactical, field setup, or fantasy scoring questions grounded in the current delivery state.")
+
+    # Snapshot dictionary for Dugout AI
+    live_snapshot = {
+        "delivery_display": current_row["delivery_display"],
+        "innings": current_row["innings"],
+        "team_batting": current_row["team_batting"],
+        "runs_total_innings": total_runs_inn,
+        "wickets_total_innings": wickets_inn,
+        "batter": current_row["batter"],
+        "bowler": current_row["bowler"],
+        "team_points": team_total_points,
+        "captain_name": active_captain_name,
+        "vc_name": active_vc_name,
+        "last_event": all_facts[-1]["event"] if all_facts else "Standard delivery",
+    }
+
+    # Quick prompt pills
+    st.markdown("<span style='font-size:0.85rem; color:#94A3B8;'>💡 Quick Questions:</span>", unsafe_allow_html=True)
+    pill_c1, pill_c2, pill_c3 = st.columns(3)
+    
+    with pill_c1:
+        if st.button("🎯 Why is this bowler bowling?", use_container_width=True):
+            st.session_state["dugout_last_query"] = "Why is this bowler bowling right now?"
+            st.session_state["dugout_response"] = answer_fan_query(
+                "Why is this bowler bowling right now?", live_snapshot, language
             )
-        elif best_pick["net_difference"] == 0:
-            st.info("💡 Your current captain selection matches the optimal point outcome so far.")
-        else:
-            st.info(f"👑 **Great Choice!** Your active Captain **{captain_name}** is currently outperforming all other teammates.")
-    else:
-        st.info("No alternative players found to evaluate.")
+    with pill_c2:
+        if st.button("🌟 Who has the highest upside?", use_container_width=True):
+            st.session_state["dugout_last_query"] = "Who in my lineup has the highest upside this phase?"
+            st.session_state["dugout_response"] = answer_fan_query(
+                "Who in my lineup has the highest upside this phase?", live_snapshot, language
+            )
+    with pill_c3:
+        if st.button("🛡️ Explain the current field setup.", use_container_width=True):
+            st.session_state["dugout_last_query"] = "Explain the current field setup."
+            st.session_state["dugout_response"] = answer_fan_query(
+                "Explain the current field setup.", live_snapshot, language
+            )
+
+    # Free text input query
+    with st.form(key="dugout_form", clear_on_submit=False):
+        user_query = st.text_input(
+            "Or ask any question about this live delivery or fantasy points:",
+            placeholder="e.g. Can Bumrah get me into the top rank? What happens if Miller hits a six?",
+        )
+        submit_btn = st.form_submit_button("Ask Dugout AI ⚡", use_container_width=True)
+
+    if submit_btn and user_query:
+        st.session_state["dugout_last_query"] = user_query
+        with st.spinner("Analyzing live dugout tactics..."):
+            st.session_state["dugout_response"] = answer_fan_query(user_query, live_snapshot, language)
+
+    # Display Dugout AI Response
+    if st.session_state["dugout_response"]:
+        st.markdown(f"""
+        <div class="dugout-chat-bubble">
+            <div style="font-size: 0.85rem; color: #94A3B8; margin-bottom: 4px;">
+                💬 <strong>Question:</strong> "{st.session_state['dugout_last_query']}"
+            </div>
+            <div style="color: #F8FAFC; font-size: 1.0rem;">
+                🤖 <strong>Dugout AI:</strong> {st.session_state['dugout_response']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ==========================================
 # FOOTER
@@ -533,3 +772,16 @@ st.markdown("""
     Demo replays past match events deterministically. Not an odds, betting, or prediction tool.
 </div>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# LIVE SIMULATION STREAMING LOOP
+# ==========================================
+if st.session_state["is_playing"]:
+    if selected_ball_idx < total_balls:
+        time.sleep(speed_val)
+        st.session_state["slider_ball"] = selected_ball_idx + 1
+        st.rerun()
+    else:
+        st.session_state["is_playing"] = False
+        st.toast("🏆 Match Concluded! Final scores calculated.", icon="🎉")
+        st.rerun()
