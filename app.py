@@ -4,6 +4,7 @@ Production-ready Streamlit application.
 Deterministic calculation engine with real-time live simulation, AI Dugout Q&A, and interactive what-if customization.
 """
 
+import os
 from pathlib import Path
 import re
 import time
