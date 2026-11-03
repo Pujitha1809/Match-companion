@@ -13,6 +13,11 @@ Fantasy sports fans tracking live matches frequently see their points jump or dr
 
 ## 🚀 Live Demo & "Try This First"
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://match-companion.streamlit.app/)
+
+🔗 **Live App**: https://match-companion.streamlit.app/  
+📦 **GitHub**: https://github.com/Pujitha1809/Match-companion
+
 - **Recommended First Action**:
   1. Use the **Match Progress Slider** (or click the quick jump **"⚡ Wicket"** button in the sidebar) to navigate to **Ball 21**.
   2. Open the **"⚡ Explain My Points"** tab: see Vice-Captain Jasprit Bumrah's clean bowled dismissal of Quinton de Kock (+49.5 pts with 1.5x boost) explained instantly in English or Hinglish.

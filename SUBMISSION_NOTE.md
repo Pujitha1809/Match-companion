@@ -1,5 +1,8 @@
 # Assignment Submission Note (Under 200 Words)
 
+**Live App:** https://match-companion.streamlit.app/  
+**GitHub:** https://github.com/Pujitha1809/Match-companion
+
 **Problem:**  
 Fantasy fans watching live matches see their points change but rarely understand why. Fans who join mid-match also feel lost. Both moments make the experience feel opaque exactly when excitement peaks.
 
